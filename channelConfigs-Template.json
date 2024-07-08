@@ -1,0 +1,8 @@
+{
+    "101": {
+        "type": "ntc",
+        "label": "channel 1 data",
+        "unit": "mV",
+        "displayUnit": "C"
+    }
+}
