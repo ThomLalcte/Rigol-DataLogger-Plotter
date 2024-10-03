@@ -1,8 +1,8 @@
-import argparse, os, numpy as np
+import argparse, os, numpy as np, json
 from sys import argv
 from matplotlib import pyplot as plt
-from datetime import datetime
-import json
+from datetime import datetime, timedelta
+
 
 # design philosophy:
 # label the data in the csv file with the unit in the same column
@@ -22,6 +22,7 @@ import json
 
 
 def setupParser():
+
     print("parsing arguments")
     parser = argparse.ArgumentParser(description="Utility to record samples from the Poseidon")
     parser.add_argument(
@@ -123,7 +124,6 @@ def loadFile(path, args):
             print("No csv files found in the provided directory")
             exit()
 
-    loadedfiles = {}
     data = {
         "dataSize": 0,  # the amount of data points in set
         "channels": [],  # the channels in the set
@@ -139,11 +139,21 @@ def loadFile(path, args):
     }
 
     # sort the files by name reversed (oldest first)
+    # create a list with M300 replaced with nothing
+    # templateFiles = [file.replace("M300", "") for file in files]
+    # # get the sort index
+    # sortIndex = np.argsort(templateFiles)[::-1]
+    # # sort the files
+    # files = np.array(files)[sortIndex].tolist()
     files.sort()
 
     for file in files:
-        loadedfiles.update({file: []})
         fileNameShorted = file.split("/")[-1].split(".")[0].split("\\")[1]
+        # check if the file name is already in the data, if so add a number to the name in the format of filename_00X
+        while fileNameShorted in data["files"]:
+            # 'C:/Users/tlalancette/OneDrive - Gecko Alliance Group Inc/OPJ-44/4_Solution Development/XX_RD Hardware/Bug ORP/2e test/data\\goldRef\\20240726_124734\\dat00002.csv'
+            fileNameShorted = f"{file.split('/')[-1].split('.')[0].split('\\')[1]}_{file.split('/')[-1].split('.')[0].split('\\')[2]}_{file.split('/')[-1].split('.')[0].split('\\')[-1]}"
+
         print(f"loading {files.index(file)}: {fileNameShorted}")
         fileData = openFile(file, args.delimiter)
 
@@ -239,8 +249,10 @@ def trimData(data: dict, args):
         exit()
 
 
-def plotData(data: dict, args, channelConfig: dict = None):
-    print("plotting data")
+def packageData(data: dict, args, channelConfig: dict = None):
+    # create a new dict to store the data so that one may simply add a data set to a plot using only the name of the data set
+    packaged_Data = {}
+
     labels = data["channels"]
 
     trimData(data, args)
@@ -250,27 +262,16 @@ def plotData(data: dict, args, channelConfig: dict = None):
         concatenatedTime += data["files"][serie]["channels"]["Time"].tolist()
 
     label: str
-    plots = {}
     for label in labels:
         # check if the label is in the channel configuration, if not go to the next label
         if label not in channelConfig.keys():
             continue
-        elif label != "Time":
-            unitLabel = channelConfig[label]["displayUnit"]
-            actualUnit = channelConfig[label]["unit"]
-            displayLabel = channelConfig[label]["label"]
-            if unitLabel not in plots:
-                newAxis: plt.Axes
-                newfig, newAxis = plt.subplots()
-                newAxis.set_xlabel("Time")
-                newAxis.set_ylabel(f"{unitLabel}({actualUnit})")
-                newAxis.set_title(unitLabel)
-                plots.update({unitLabel: (newfig, newAxis)})
 
         # combine the individual data sets into one easy to index
         indexChain = []
-        concatenatedData = []
+        concatenatedData = np.array([], float)
         for serie in data["files"]:
+            print(f"indexing {label} in {serie}")
             if label not in data["files"][serie]["channels"]:
                 continue
             serieValidIdx = data["files"][serie]["validIdx"]
@@ -282,7 +283,11 @@ def plotData(data: dict, args, channelConfig: dict = None):
                     data["files"][serie]["range"][0] + serieValidIdx[-1] + 1,
                 ]
             )
-            concatenatedData += data["files"][serie]["channels"][label][serieValidIdx].tolist()
+            # concatenatedData += data["files"][serie]["channels"][label][serieValidIdx]
+            concatenatedData = np.concatenate(
+                (concatenatedData, data["files"][serie]["channels"][label][serieValidIdx])
+            )
+            concatenatedData[-1] = np.nan
 
         # check if the index chain is correct
         for link in range(len(indexChain) - 1):
@@ -296,24 +301,171 @@ def plotData(data: dict, args, channelConfig: dict = None):
                 )
                 exit()
 
-        # plot the data
-        if label != "Time":
-            print(f"plotting {len(concatenatedData)} points for {label}")
-            if unitLabel == "ORP":
-                yData = np.array(concatenatedData, float)*1000
-            else:
-                yData = np.array(concatenatedData, float)
-            plots[unitLabel][1].plot(
-                concatenatedTime[indexChain[0][0] : indexChain[-1][1]],
-                yData,
-                label=f"{label}-{displayLabel}",
+        concatenatedData = np.array(concatenatedData, float)
+
+        packaged_Data.update({label: (concatenatedTime, concatenatedData, indexChain)})
+
+    return packaged_Data
+
+
+def plotData(dataSeries: dict, args, channelConfig: dict, saveDir: str = "plots"):
+    print("plotting data")
+
+    # create the desired plots
+    plots = {}
+
+    # generic plot for each display units
+    for label in dataSeries:
+        unitLabel = channelConfig[label]["displayUnit"]
+        if unitLabel not in plots:
+            newAxis: plt.Axes
+            newfig, newAxis = plt.subplots()
+            newAxis.set_xlabel("Time")
+            newAxis.set_ylabel(f"{unitLabel} ({channelConfig[label]["unit"]})")
+            newAxis.set_title(f"General view of variable {unitLabel}")
+            # set the figure margins to the minimum
+            newfig.subplots_adjust(left=0.075, right=0.925, top=0.925, bottom=0.075)
+            # set the figure window size to the maximum
+            newfig.set_size_inches(18.5, 10.5)
+            # add verical lines to seperate the different test conditions
+            newAxis.axvline(datetime(2024, 7, 8, 14, 30), c="black", ls="--")
+            newAxis.axvline(datetime(2024, 7, 11, 15, 40), c="black", ls="--")
+            newAxis.axvline(datetime(2024, 7, 22, 16, 41), c="black", ls="--")
+            newAxis.axvline(datetime(2024, 7, 24, 13, 37), c="black", ls="--")
+            newAxis.axvline(datetime(2024, 7, 26, 11, 6), c="black", ls="--")
+
+            vPos = {"pH": -0.1, "ORP": 100, "thermistor Temperature": 0.5, "tC": 18}[unitLabel]
+            offset = 1.0
+            offsetStep = 0
+            newAxis.text(datetime(2024, 7, 5, 12, 5), vPos * offset, "Test setup assembly")
+            offset += offsetStep
+            newAxis.text(datetime(2024, 7, 8, 14, 35), vPos * offset, "Air temperature\nincrease")
+            offset += offsetStep
+            newAxis.text(
+                datetime(2024, 7, 11, 15, 45),
+                vPos * offset,
+                "Water temperature increase 1st attempt\n(setup has broken down)",
+            )
+            offset += offsetStep
+            newAxis.text(datetime(2024, 7, 22, 16, 46), vPos * offset, "Test setup\nreassembly")
+            offset += offsetStep
+            newAxis.text(datetime(2024, 7, 24, 13, 42), vPos * offset, "Water\ntemperature\nincrease\n2nd attempt")
+            offset += offsetStep
+            newAxis.text(
+                datetime(2024, 7, 26, 11, 11),
+                vPos * offset,
+                "Test left running at\ntemperature limits\nand using gold reference\nprobe",
             )
 
-    for plot in plots:
-        currAxis:plt.Axes = plots[plot][1]
-        currAxis.legend()
+            plots.update({unitLabel: (newfig, newAxis)})
 
-    plt.show()
+    # linestyleDict = {"pH": "--", "ORP": ":", "C": "-", "tC": "-"}
+    markerDict = {"pH": "o", "ORP": "s", "C": "D", "tC": "x"}
+    timeRanges = {
+        "Test setup assembly": [datetime(2024, 7, 5, 12, 5), datetime(2024, 7, 8, 14, 30)],
+        "Air temperature increase": [datetime(2024, 7, 8, 14, 35), datetime(2024, 7, 11, 15, 40)],
+        "Water temperature increase 1st attempt": [datetime(2024, 7, 11, 15, 45), datetime(2024, 7, 15, 13)],
+        "Test setup reassembly": [datetime(2024, 7, 22, 16, 46), datetime(2024, 7, 24, 13, 37)],
+        "Water temperature increase 2nd attempt": [datetime(2024, 7, 25, 12, 0), datetime(2024, 7, 26, 11, 6)],
+        "Test left running at temperature limits and using gold reference probe": [
+            datetime(2024, 7, 26, 11, 11),
+            dataSeries[label][0][-1] + timedelta(hours=2),
+        ],
+    }
+
+    for label in dataSeries:
+        unitLabel = channelConfig[label]["displayUnit"]
+        displayLabel = channelConfig[label]["label"]
+        concatenatedTime, concatenatedData, indexChain = dataSeries[label]
+
+        # plot the data
+        if unitLabel == "ORP":
+            yData = concatenatedData * 1000
+        else:
+            yData = concatenatedData
+        plots[unitLabel][1].plot(
+            concatenatedTime[indexChain[0][0] : indexChain[-1][1]],
+            yData,
+            label=f"{displayLabel}",
+            # linestyle=linestyleDict[unitLabel],
+            # marker=markerDict[unitLabel],
+        )
+        
+    # save the plots
+    for plot in plots:
+        plots[plot][0].savefig(f"{saveDir}/general view {plot}.png")
+
+    for timeRange in timeRanges:
+        print(f"plotting {timeRange}")
+
+        for plot in plots:
+            currAxis: plt.Axes = plots[plot][1]
+            currFigure: plt.Figure = plots[plot][0]
+            currAxis.set_title(f"Focused view of variable {plot} during \"{timeRange}\" period")
+            currAxis.legend(title=plot)
+            currAxis.set_xlim(timeRanges[timeRange])
+
+        # plt.show()
+
+        # save the plots
+        for plot in plots:
+            plots[plot][0].savefig(f"{saveDir}/{timeRange}-{plot}.png")
+
+    # plot twinx for the temperature and ORP
+    fig: plt.Figure
+    ax1: plt.Axes
+    ax2: plt.Axes
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx()
+    ax1.set_xlabel("Time")
+    ax1.set_ylabel("Temperature (°C)")
+    ax2.set_ylabel("ORP (mV)")
+    ax1.set_title("Temperature and ORP")
+
+    for label in dataSeries:
+        unitLabel = channelConfig[label]["displayUnit"]
+        displayLabel = channelConfig[label]["label"]
+        concatenatedTime, concatenatedData, indexChain = dataSeries[label]
+
+        if unitLabel == "ORP":
+            yData = concatenatedData * 1000
+        else:
+            yData = concatenatedData
+
+        if unitLabel == "tC":
+            ax1.plot(
+                concatenatedTime[indexChain[0][0] : indexChain[-1][1]],
+                yData,
+                label=f"{displayLabel}",
+                linestyle="-",
+            )
+        if unitLabel == "ORP":
+            ax2.plot(
+                concatenatedTime[indexChain[0][0] : indexChain[-1][1]],
+                yData,
+                label=f"{displayLabel}",
+                linestyle="--",
+            )
+
+    ax1.legend(title="Temperature")
+    ax2.legend(title="ORP")
+    # set the figure margins to the minimum
+    fig.subplots_adjust(left=0.075, right=0.925, top=0.925, bottom=0.075)
+    # set the figure window size to the maximum
+    fig.set_size_inches(18.5, 10.5)
+
+    ax1.set_xlim(timeRanges["Air temperature increase"])
+    fig.savefig(f"{saveDir}/Temperature and ORP air increase.png")
+
+    # plt.show()
+
+    ax1.set_xlim(timeRanges["Water temperature increase 1st attempt"])
+    fig.savefig(f"{saveDir}/Temperature and ORP water increase 1st attempt.png")
+
+    ax1.set_xlim(timeRanges["Water temperature increase 2nd attempt"])
+    fig.savefig(f"{saveDir}/Temperature and ORP water increase 2nd attempt.png")
+
+
 
 def main():
     args = setupParser()
@@ -321,7 +473,8 @@ def main():
     if args.channelconfig is not None:
         channelConfig = loadChannelConfig(args.channelconfig)
 
-    plotData(data, args, channelConfig)
+    pckData = packageData(data, args, channelConfig)
+    plotData(pckData, args, channelConfig)
 
 
 if __name__ == "__main__":

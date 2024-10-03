@@ -1,0 +1,8 @@
+{
+    "Chan 109 (V)": {
+        "type": "Various",
+        "label": "Various reference probes readings",
+        "unit": "mV",
+        "displayUnit": "mV/pH/ORP"
+    }
+}
